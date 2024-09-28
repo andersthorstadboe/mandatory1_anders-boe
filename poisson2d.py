@@ -32,30 +32,59 @@ class Poisson2D:
 
     def create_mesh(self, N):
         """Create 2D mesh and store in self.xij and self.yij"""
-        # self.xij, self.yij ...
-        raise NotImplementedError
+        self.N = N
+        self.h = self.L/N
+        xi, yj = np.linspace(0,self.L,N+1),np.linspace(0,self.L,N+1)
+        self.xij, self.yij = np.meshgrid(xi,yj,indexing='ij',sparse=True) 
+        return self.xij, self.yij
 
     def D2(self):
         """Return second order differentiation matrix"""
-        raise NotImplementedError
+        D = sparse.diags([1, -2, 1], [-1, 0, 1], (self.N+1, self.N+1), 'lil')
+        D[0, :4] = 2, -5, 4, -1
+        D[-1, -4:] = -1, 4, -5, 2
+        D /= self.h**2
+        return D
 
     def laplace(self):
         """Return vectorized Laplace operator"""
-        raise NotImplementedError
+        D2x = self.D2()
+        D2y = self.D2()
+        Ix, Iy = sparse.eye(self.N+1), sparse.eye(self.N+1)
+        return (sparse.kron(D2x, Iy) + sparse.kron(Ix, D2y)).tolil()
 
     def get_boundary_indices(self):
         """Return indices of vectorized matrix that belongs to the boundary"""
-        raise NotImplementedError
+        B = np.ones((self.N+1,self.N+1), dtype=bool)
+        B[1:-1,1:-1] = 0
+
+        return np.where(B.ravel() == 1)[0]
+
+    def meshfunc(self,u):
+
+        return sp.lambdify((x,y),u)(self.xij,self.yij)
 
     def assemble(self):
         """Return assembled matrix A and right hand side vector b"""
-        # return A, b
-        raise NotImplementedError
+        A = self.laplace()
+        bnds = self.get_boundary_indices()
+        for i in bnds:
+            A[i] = 0
+            A[i,i] = 1
+        A = A.tocsr()
+
+        b = np.zeros((self.N+1, self.N+1))
+        b[:,:] = self.meshfunc(self.f)
+        uij = self.meshfunc(self.ue)
+        b.ravel()[bnds] = uij.ravel()[bnds]
+
+        return A, b
 
     def l2_error(self, u):
         """Return l2-error norm"""
-        raise NotImplementedError
-
+        uij = self.meshfunc(self.ue)
+        return np.sqrt(self.h*self.h * np.sum((u - uij)**2))
+    
     def __call__(self, N):
         """Solve Poisson's equation.
 
@@ -100,6 +129,37 @@ class Poisson2D:
         r = [np.log(E[i-1]/E[i])/np.log(h[i-1]/h[i]) for i in range(1, m+1, 1)]
         return r, np.array(E), np.array(h)
 
+    def LagrangeBasis(self, xj, x=x):
+        """Construct Lagrange basis for points in xj
+
+        Parameters
+        ----------
+        xj : array
+            Interpolation points (nodes)
+        x : Sympy Symbol
+
+        Returns
+        -------
+        Lagrange basis as a list of Sympy functions
+        """
+        from sympy import Mul
+        n = len(xj)
+        ell = []
+        numert = Mul(*[x - xj[i] for i in range(n)])
+        for i in range(n):
+            numer = numert/(x - xj[i])
+            denom = Mul(*[(xj[i] - xj[j]) for j in range(n) if i != j])
+            ell.append(numer/denom)
+        return ell
+    
+    def LagrangeFunc2D(self,u,basisx,basisy):
+        N, M = u.shape
+        f = 0
+        for i in range(N):
+            for j in range(M):
+                f += basisx[i]*basisy[j]*u[i, j]
+        return f
+    
     def eval(self, x, y):
         """Return u(x, y)
 
@@ -113,7 +173,47 @@ class Poisson2D:
         The value of u(x, y)
 
         """
-        raise NotImplementedError
+        print('x-value =', x); print('y-value = ',y)
+        deg = 10; deg2 = int(np.ceil(deg/2))
+        #print(len(self.xij))
+        x_e,y_e = np.where(self.xij == x)[0], np.where(self.yij == y)[1]
+        
+        if x_e.size != 0 and y_e.size != 0:
+            val = self.U[x_e,y_e][0]
+        else:
+            # Finding closest indices
+            idx = np.abs(self.xij - x).argmin()
+            idy = np.abs(self.yij - y).argmin()
+            print('Closest index in x: ',idx); print('Closest index in y: ',idy)
+            idx0 = idx-deg2; idx1 = idx+deg2
+            idy0 = idy-deg2; idy1 = idy+deg2
+            #print(len(self.xij))
+            if idx-deg < 0:
+                idx0 = 0
+                idx1 = idx0 + deg
+            if idx+deg > len(self.xij):
+                idx1 = len(self.xij)-1
+                idx0 = idx1 - deg
+            if idy-deg < 0:
+                idy0 = 0
+                idy1 = idy0 + deg
+            if idy+deg > len(self.yij[0,:]):
+                idy1 = len(self.yij[0,:]) - 1
+                idy0 = idy1 - deg
+
+            xl = np.arange(idx0,idx1+1)#, deg*2)
+            yl = np.arange(idy0,idy1+1)#, deg*2)
+            print('y-points: ',yl)
+            print('x-points: ',xl)
+
+            lx,ly = self.LagrangeBasis(self.xij[xl,0],x), self.LagrangeBasis(self.yij[0,yl],y)
+            U_in = self.U[xl[0]:xl[-1],yl[0]:yl[-1]]
+            #print(U_in)
+            val = self.LagrangeFunc2D(U_in,lx,ly)
+        
+        print('Interpolation value = %g' %( val))
+
+        return val
 
 def test_convergence_poisson2d():
     # This exact solution is NOT zero on the entire boundary
@@ -125,7 +225,22 @@ def test_convergence_poisson2d():
 def test_interpolation():
     ue = sp.exp(sp.cos(4*sp.pi*x)*sp.sin(2*sp.pi*y))
     sol = Poisson2D(1, ue)
-    U = sol(100)
+    U = sol(101)
+    #print(abs(sol.eval(sol.h/2, 1-sol.h/2) - ue.subs({x: sol.h/2, y: 1-sol.h/2}).n()))
+    print("Exact value %g" %(ue.subs({x: 0.52, y: 0.63}).n()))
     assert abs(sol.eval(0.52, 0.63) - ue.subs({x: 0.52, y: 0.63}).n()) < 1e-3
+
+    print("Exact value %g" %(ue.subs({x: sol.h*2, y: 1-sol.h*2}).n()))
+    assert abs(sol.eval(sol.h*2, 1-sol.h*2) - ue.subs({x: sol.h*2, y: 1-sol.h*2}).n()) < 1e-3
+
+    print("Exact value %g" %(ue.subs({x: sol.h/2, y: 1-sol.h/2}).n()))
     assert abs(sol.eval(sol.h/2, 1-sol.h/2) - ue.subs({x: sol.h/2, y: 1-sol.h/2}).n()) < 1e-3
 
+if __name__ == '__main__':
+    ue = x**3 + y**3
+    sol = Poisson2D(1,ue)
+    U = sol(101)
+    print(sol.eval(sol.h/2, 1-sol.h/2))
+    print(ue.subs({x: sol.h/2, y: 1-sol.h/2}).n())
+    test_convergence_poisson2d()
+    test_interpolation()
