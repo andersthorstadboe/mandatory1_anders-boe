@@ -48,8 +48,10 @@ class Wave2D:
             Parameters for the standing wave
         """
         self.Unp1,self.Un,self.Unm1 = np.zeros((3,N+1,N+1))
+        du_t = sp.diff(self.ue(mx,my),t,1)
+        #print(self.Un.shape)
         self.Unm1[:] = sp.lambdify((x,y,t), self.ue(mx,my))(self.xij,self.yij,0)
-        self.Un[:] = sp.lambdify((x,y,t), self.ue(mx,my))(self.xij,self.yij,self.dt) #(self.Unm1[:] + .5 * (self.c*self.dt)**2*(self.D @ self.Un + self.Un @ self.D.T)#(self.D @ self.Unm1 + self.Unm1 @ self.D.T)
+        self.Un[:] = self.Unm1 + .5*(self.c*self.dt)**2*(self.D2x @ self.Unm1 + self.Unm1 @ self.D2y.T)# + sp.lambdify((x,y,t),self.ue(mx,my))(self.xij,self.yij,self.dt) * self.dt  #(self.D @ self.Unm1 + self.Unm1 @ self.D.T) sp.lambdify((x,y,t), self.ue(mx,my))(self.xij,self.yij,self.dt)
         return self.Unp1, self.Un, self.Unm1
 
     @property
@@ -70,19 +72,19 @@ class Wave2D:
         uij = sp.lambdify((x,y,t), self.ue(self.mx,self.my))(self.xij,self.yij,t0)
         return np.sqrt(self.h*self.h * np.sum((u - uij)**2))
 
-    def apply_bcs(self):
+    def apply_bcs(self,U):
         """Applying Dirichlet boundary conditions with arbitrary RHS"""
         # x = 0
-        self.Unp1[0] = self.ue(self.mx,self.my).subs({x: 0})
+        U[0] = self.ue(self.mx,self.my).subs({x: 0})
         # x = Lx = 1
-        self.Unp1[-1] = self.ue(self.mx,self.my).subs({x: 1})
+        U[-1] = self.ue(self.mx,self.my).subs({x: 1})
         # y = 0
-        self.Unp1[:,0] = self.ue(self.mx,self.my).subs({y: 0})
+        U[:,0] = self.ue(self.mx,self.my).subs({y: 0})
         # y = Ly = 1
-        self.Unp1[:,-1] = self.ue(self.mx,self.my).subs({y: 1})
+        U[:,-1] = self.ue(self.mx,self.my).subs({y: 1})
 
-        return self.Unp1
-
+        return U
+    
     def __call__(self, N, Nt, cfl=0.5, c=1.0, mx=3, my=3, store_data=-1):
         """Solve the wave equation
 
@@ -112,18 +114,20 @@ class Wave2D:
         self.cfl = cfl; self.c = c
         self.Nt = Nt; self.mx = mx; self.my = my
         self.create_mesh(N,sparse=True)
-        self.D = self.D2(N)
+        self.D2x = self.D2(N)
+        self.D2y = self.D2(N)
         
         self.initialize(N,mx,my)
+        self.apply_bcs(self.Un)
         l2_err = []
 
         plotdata = {0: self.Unm1.copy()}
         if store_data == 1: 
             plotdata[1] = self.Un.copy()
-        for n in range(Nt):
-            self.Unp1[:] = 2*self.Un - self.Unm1 + (self.c*self.dt)**2 * (self.D @ self.Un + self.Un @ self.D.T)
+        for n in range(2,Nt+1):
+            self.Unp1[:] = 2*self.Un - self.Unm1 + (self.c*self.dt)**2 * (self.D2x @ self.Un + self.Un @ self.D2y.T)
             #Boundary condictions
-            self.apply_bcs()  
+            self.apply_bcs(self.Unp1)  
             # Updating Un, Unm1
             self.Unm1[:] = self.Un
             self.Un[:] = self.Unp1
@@ -131,7 +135,7 @@ class Wave2D:
             if store_data > 0 and n % store_data == 0: # Storing the Un^th time step data
                 plotdata[n] = self.Unm1.copy()
             if store_data == -1:
-                l2_err.append(self.l2_error(self.Unm1,n))
+                l2_err.append(self.l2_error(self.Unp1,n*self.dt))
         if store_data == -1:
             return self.h, l2_err
         else:
@@ -195,42 +199,72 @@ class Wave2D_Neumann(Wave2D):
 
     def D2(self, N):
         D = sparse.diags([1, -2, 1], [-1, 0, 1], (N+1, N+1), 'lil')
-        D[0, :4] = 2, -5, 4, -1
-        D[-1, -4:] = -1, 4, -5, 2
+        D[0, :4] = -2, 2, 0, 0
+        D[-1, -4:] = 0, 0, 2, -2
         D /= self.h**2
         return D
 
     def ue(self, mx, my):
         return sp.cos(mx*sp.pi*x)*sp.cos(my*sp.pi*y)*sp.cos(self.w*t)
 
-    def apply_bcs(self):
-        raise NotImplementedError
+    def apply_bcs(self,U):
+        '''du_x = sp.diff(self.ue(self.mx,self.my), x, 1)
+        du_y = sp.diff(self.ue(self.mx,self.my), y, 1)
+        # x = 0
+        self.D2x[0,:4] = 2, -2, 0, 0 
+        U[0] = self.D2x[0] @ self.Un[0] + self.Un[0] @ self.D2y[0].T + (1/self.h**2)*du_x.subs({x: 0})
+        # x = L
+        self.D2x[-1,-4:] = 0, 0, 2, -2
+        U[-1] = self.D2x[-1] @ self.Un[-1] + self.Un[-1] @ self.D2y[-1].T + (1/self.h**2)*du_x.subs({x: 1})
+        # y = 0
+        self.D2y[0,:4] = 2, -2, 0, 0
+        U[:,0] = self.D2x[0] @ self.Un[:,0] + self.Un[:,0] @ self.D2y[0].T + (1/self.h**2)*du_y.subs({y: 0})
+        # y = L
+        self.D2y[0,-4:] = 0, 0, 2, -2
+        U[:,-1] = self.D2x[-1] @ self.Un[:,-1] + self.Un[:,-1] @ self.D2y[-1].T + (1/self.h**2)*du_y.subs({y: 1})
+        '''
+        return U
 
 def test_convergence_wave2d():
     sol = Wave2D()
     r, E, h = sol.convergence_rates(mx=2, my=3)
-    print(abs(r[-1]-2))
+    #print((E))
     assert abs(r[-1]-2) < 1e-2
 
 def test_convergence_wave2d_neumann():
     solN = Wave2D_Neumann()
     r, E, h = solN.convergence_rates(mx=2, my=3)
+    #print((E))
     assert abs(r[-1]-2) < 0.05
 
 def test_exact_wave2d():
     sol_D = Wave2D()
     sol_N = Wave2D_Neumann()
-    
-
-    assert 0
+    N, Nt = 20, 100
+    mx = 8
+    cfl = 1/(np.sqrt(2))
+    #sol_D.ue = sp.exp(sp.im
+    dD, err_D = sol_D(N=N,Nt=Nt,cfl=cfl,mx=mx,my=mx)
+    dN, err_N = sol_N(N=N,Nt=Nt,cfl=cfl,mx=mx,my=mx)
+    #erD = np.array(err_D); erN = np.array(err_N)
+    assert err_D[-1] < 1e-12
+    assert err_N[-1] < 1e-12
 
 if __name__ == '__main__':
     test_convergence_wave2d()
+    test_convergence_wave2d_neumann()
+    test_exact_wave2d()
 
     ## Animation
-    N, Nt = 50, 75
+    shw = 'n'
+    N, Nt = 50, 60
     solD = Wave2D()
-    data = solD(N,Nt,store_data=1)
-    f_name = 'testwave_'+str(N)+'_'+str(Nt)+'.gif'
-    solD.animationPlot(data,f_name=f_name,clrmap='viridis')
+    dataD = solD(N,Nt,store_data=1)
+    solN = Wave2D_Neumann()
+    dataN = solN(N,Nt,store_data=1)
+    f_name1 = 'testwave_'+str(N)+'_'+str(Nt)+'.gif'
+    f_name2 = 'neumannwave.gif'
+    if shw == 'y':
+        solD.animationPlot(data=dataD,f_name=f_name1,clrmap='viridis')
+        solN.animationPlot(data=dataN,f_name=f_name2,clrmap='viridis')
     

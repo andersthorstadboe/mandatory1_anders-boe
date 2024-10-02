@@ -1,6 +1,8 @@
 import numpy as np
 import sympy as sp
 import scipy.sparse as sparse
+from scipy.interpolate import interpn
+import matplotlib.pyplot as plt
 
 x, y = sp.symbols('x,y')
 
@@ -173,9 +175,7 @@ class Poisson2D:
         The value of u(x, y)
 
         """
-        print('x-value =', x); print('y-value = ',y)
-        deg = 10; deg2 = int(np.ceil(deg/2))
-        #print(len(self.xij))
+        deg = 4; deg2 = int(np.ceil(deg/2))
         x_e,y_e = np.where(self.xij == x)[0], np.where(self.yij == y)[1]
         
         if x_e.size != 0 and y_e.size != 0:
@@ -184,10 +184,10 @@ class Poisson2D:
             # Finding closest indices
             idx = np.abs(self.xij - x).argmin()
             idy = np.abs(self.yij - y).argmin()
-            print('Closest index in x: ',idx); print('Closest index in y: ',idy)
+
             idx0 = idx-deg2; idx1 = idx+deg2
             idy0 = idy-deg2; idy1 = idy+deg2
-            #print(len(self.xij))
+ 
             if idx-deg < 0:
                 idx0 = 0
                 idx1 = idx0 + deg
@@ -201,16 +201,14 @@ class Poisson2D:
                 idy1 = len(self.yij[0,:]) - 1
                 idy0 = idy1 - deg
 
-            xl = np.arange(idx0,idx1+1)#, deg*2)
-            yl = np.arange(idy0,idy1+1)#, deg*2)
-            print('y-points: ',yl)
-            print('x-points: ',xl)
+            xl = np.arange(idx0,idx1+1)
+            yl = np.arange(idy0,idy1+1)
 
             lx,ly = self.LagrangeBasis(self.xij[xl,0],x), self.LagrangeBasis(self.yij[0,yl],y)
-            U_in = self.U[xl[0]:xl[-1],yl[0]:yl[-1]]
-            #print(U_in)
+            U_in = self.U[xl[0]:xl[-1]+1,yl[0]:yl[-1]+1]
+
             val = self.LagrangeFunc2D(U_in,lx,ly)
-        
+
         print('Interpolation value = %g' %( val))
 
         return val
@@ -225,22 +223,31 @@ def test_convergence_poisson2d():
 def test_interpolation():
     ue = sp.exp(sp.cos(4*sp.pi*x)*sp.sin(2*sp.pi*y))
     sol = Poisson2D(1, ue)
-    U = sol(101)
-    #print(abs(sol.eval(sol.h/2, 1-sol.h/2) - ue.subs({x: sol.h/2, y: 1-sol.h/2}).n()))
-    print("Exact value %g" %(ue.subs({x: 0.52, y: 0.63}).n()))
-    assert abs(sol.eval(0.52, 0.63) - ue.subs({x: 0.52, y: 0.63}).n()) < 1e-3
+    U = sol(100)
+    print("Exact value = %g" %(ue.subs({x: 0.52, y: 0.63}).n()))
+    assert abs(sol.eval(0.52, 0.63) - ue.subs({x: 0.52, y: 0.63}).n()) < 1e-3, abs(sol.eval(0.52, 0.63) - ue.subs({x: 0.52, y: 0.63}).n())
+    
+    H = sol.h*(14/10)
+    print("Exact value = %g" %(ue.subs({x: H, y: 1-H}).n()))
+    assert abs(sol.eval(H, 1-H) - ue.subs({x: H, y: 1-H}).n()) < 1e-3
 
-    print("Exact value %g" %(ue.subs({x: sol.h*2, y: 1-sol.h*2}).n()))
-    assert abs(sol.eval(sol.h*2, 1-sol.h*2) - ue.subs({x: sol.h*2, y: 1-sol.h*2}).n()) < 1e-3
-
-    print("Exact value %g" %(ue.subs({x: sol.h/2, y: 1-sol.h/2}).n()))
-    assert abs(sol.eval(sol.h/2, 1-sol.h/2) - ue.subs({x: sol.h/2, y: 1-sol.h/2}).n()) < 1e-3
+    print("Exact value = %g" %(ue.subs({x: sol.h/2, y: 1-sol.h/2}).n()))
+    assert abs(sol.eval(sol.h/2, 1-sol.h/2) - ue.subs({x: sol.h/2, y: 1-sol.h/2}).n()) < 1e-3, abs(sol.eval(sol.h/2, 1-sol.h/2) - ue.subs({x: sol.h/2, y: 1-sol.h/2}).n())
 
 if __name__ == '__main__':
-    ue = x**3 + y**3
+    ue = sp.exp(sp.cos(4*sp.pi*x)*sp.sin(2*sp.pi*y))
     sol = Poisson2D(1,ue)
     U = sol(101)
-    print(sol.eval(sol.h/2, 1-sol.h/2))
-    print(ue.subs({x: sol.h/2, y: 1-sol.h/2}).n())
+
     test_convergence_poisson2d()
     test_interpolation()
+
+    fig,ax = plt.subplots(1,2,subplot_kw={"projection": "3d"})
+    surf = ax[0].plot_surface(sol.xij,sol.yij,U,cmap='bwr')
+    ax[0].set_title('U')
+    ax[0].set_xlabel('X'); ax[0].set_ylabel('Y')
+    Ue = sp.lambdify((x,y),ue)(sol.xij,sol.yij)
+    surf1 = ax[1].plot_surface(sol.xij,sol.yij,Ue,cmap='viridis')
+    ax[1].set_xlabel('X'); ax[1].set_ylabel('Y')
+    ax[1].set_title('U_exact')
+    #plt.show()
